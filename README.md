@@ -1,167 +1,208 @@
-# Uniswap v4 Hook Template
+# PegHook Foundry Template
 
-**A template for writing Uniswap v4 Hooks 🦄**
+Deploy a Uniswap v4 **dynamic-fee hook** (“PegHook”), create a pool, add liquidity, and swap on **Arbitrum Sepolia** — all with Foundry scripts.
 
-### Get Started
+---
 
-This template provides a starting point for writing Uniswap v4 Hooks, including a simple example and preconfigured test environment. Start by creating a new repository using the "Use this template" button at the top right of this page. Alternatively you can also click this link:
+## ✨ What’s inside
 
-[![Use this Template](https://img.shields.io/badge/Use%20this%20Template-101010?style=for-the-badge&logo=github)](https://github.com/uniswapfoundation/v4-template/generate)
+Scripts (all paths relative to repo root):
 
-1. The example hook [Counter.sol](src/Counter.sol) demonstrates the `beforeSwap()` and `afterSwap()` hooks
-2. The test template [Counter.t.sol](test/Counter.t.sol) preconfigures the v4 pool manager, test tokens, and test liquidity.
+- `script/00_DeployHook.s.sol` – Mines flags & deploys `PegHook` with `CREATE2`
+- `script/01_CreatePoolAndAddLiquidityPegHook.s.sol` – Initializes pool **with the hook** and mints initial liquidity (1 tx flow via PositionManager)
+- `script/02_AddLiquidity.s.sol` – Adds more liquidity to an existing pool/position
+- `script/03_Swap.s.sol` – Executes a swap through the pool (dynamic fee applied by hook)
 
-<details>
-<summary>Updating to v4-template:latest</summary>
+Hook requires **dynamic fees**; your pool’s `PoolKey.fee` must be **0x800000** (the `DYNAMIC_FEE_FLAG`) — not `flag | base`.
 
-This template is actively maintained -- you can update the v4 dependencies, scripts, and helpers:
+---
+
+## 🔧 Prerequisites
+
+- **Foundry** (forge/cast): <https://book.getfoundry.sh/>
+- Node (optional, for any TS/viem tooling you use)
+- RPC for **Arbitrum Sepolia**
+
+---
+
+## 🔑 Environment
+
+Create a `.env` in the repo root:
 
 ```bash
-git remote add template https://github.com/uniswapfoundation/v4-template
-git fetch template
-git merge template/main <BRANCH> --allow-unrelated-histories
+# Network
+ARBITRUM_SEPOLIA_RPC=https://sepolia-rollup.arbitrum.io/rpc
+
+# Deployer key (choose one style)
+# 1) Use CLI flag --private-key (recommended), or
+# 2) Make available to scripts:
+WALLET_SECRET=0xYOUR_PRIVATE_KEY
+
+# Uniswap v4 addresses (Arbitrum Sepolia)
+POOL_MANAGER=0xFB3e0C6F74eB1a21CC1Da29aeC80D2Dfe6C9a317
+POSITION_MANAGER=0xAc631556d3d4019C95769033B5E719dD77124BAc
+PERMIT2=0x000000000022D473030F116dDEE9F6B43aC78BA3
+STATE_VIEW=0x9D467FA9062b6e9B1a46E26007aD82db116c67cB
+
+# Tokens (example)
+USDC=0x5eff990c0A24A5F384119808398d1A64cE4BC537   # 6 decimals
+yBTC=0x65eDC65510AE691bb4F2BeD5283A004e4ebD8Ee3   # 18 decimals
+
+# (Filled after deploy)
+HOOK_ADDR=0x... # set by 00_DeployHook.s.sol output
+
+# Optional: position introspection
+TICK_LOWER=-887280
+TICK_UPPER=887280
 ```
 
-</details>
+> If you don’t want the script to read `WALLET_SECRET`, pass `--private-key 0x...` on the CLI instead.
 
-### Requirements
+---
 
-This template is designed to work with Foundry (stable). If you are using Foundry Nightly, you may encounter compatibility issues. You can update your Foundry installation to the latest stable version by running:
+## ⚙️ Install & Build
 
-```
-foundryup
-```
-
-To set up the project, run the following commands in your terminal to install dependencies and run the tests:
-
-```
+```bash
 forge install
-forge test
+forge build
 ```
 
-### Local Development
+---
 
-Other than writing unit tests (recommended!), you can only deploy & test hooks on [anvil](https://book.getfoundry.sh/anvil/) locally. Scripts are available in the `script/` directory, which can be used to deploy hooks, create pools, provide liquidity and swap tokens. The scripts support both local `anvil` environment as well as running them directly on a production network.
+## 1) 🚀 Deploy the PegHook
 
-### Executing locally with using **Anvil**:
-
-1. Start Anvil (or fork a specific chain using anvil):
+The hook address must encode specific **permission flags** in its `CREATE2` address. The script mines a salt and deploys.
 
 ```bash
-anvil
+forge script script/00_DeployHook.s.sol   --rpc-url $ARBITRUM_SEPOLIA_RPC   --broadcast   --private-key 0xYOUR_PRIVATE_KEY
 ```
 
-or
+Output will include the **hook address**. Put it into `.env` as `HOOK_ADDR`.
+
+**Expected permissions** (example): `beforeInitialize=true`, `beforeSwap=true`, others false — matching your hook’s `getHookPermissions()`.
+
+---
+
+## 2) 🫧 Create Pool & Add Initial Liquidity (with PegHook)
+
+This initializes the pool with `PoolKey` that includes your `HOOK_ADDR` and the **dynamic fee flag**:
+
+> **Important:** `fee = 0x800000` (only the flag), not `0x800000 | 3000`.
 
 ```bash
-anvil --fork-url <YOUR_RPC_URL>
+forge script script/01_CreatePoolAndAddLiquidityPegHook.s.sol   --rpc-url $ARBITRUM_SEPOLIA_RPC   --broadcast   --private-key 0xYOUR_PRIVATE_KEY
 ```
 
-2. Execute scripts:
+This script:
+- Sorts tokens into `currency0/currency1`
+- Computes `sqrtPriceX96` for your desired start price
+- Calls `PositionManager.initializePool` and `modifyLiquidities` to mint your first position
+
+---
+
+## 3) ➕ Add More Liquidity
 
 ```bash
-forge script script/00_DeployHook.s.sol \
-    --rpc-url http://localhost:8545 \
-    --private-key 0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d \
-    --broadcast
+forge script script/02_AddLiquidity.s.sol   --rpc-url $ARBITRUM_SEPOLIA_RPC   --broadcast   --private-key 0xYOUR_PRIVATE_KEY
 ```
 
-### Using **RPC URLs** (actual transactions):
+Configure the desired range / amounts inside the script (or via env), then mint more liquidity to the same pool.
 
-:::info
-It is best to not store your private key even in .env or enter it directly in the command line. Instead use the `--account` flag to select your private key from your keystore.
-:::
+---
 
-### Follow these steps if you have not stored your private key in the keystore:
-
-<details>
-
-1. Add your private key to the keystore:
+## 4) 🔁 Swap
 
 ```bash
-cast wallet import <SET_A_NAME_FOR_KEY> --interactive
+forge script script/03_Swap.s.sol   --rpc-url $ARBITRUM_SEPOLIA_RPC   --broadcast   --private-key 0xYOUR_PRIVATE_KEY
 ```
 
-2. You will prompted to enter your private key and set a password, fill and press enter:
+Your hook will set the **dynamic LP fee** in `beforeSwap` (it must return `fee | OVERRIDE_FEE_FLAG`).
 
-```
-Enter private key: <YOUR_PRIVATE_KEY>
-Enter keystore password: <SET_NEW_PASSWORD>
-```
+---
 
-You should see this:
+## 🔎 Inspecting Pool State
 
-```
-`<YOUR_WALLET_PRIVATE_KEY_NAME>` keystore was saved successfully. Address: <YOUR_WALLET_ADDRESS>
-```
+There are no “reserves” per-pool in v4; assets live in a shared **PoolManager vault**. Pool “size” is represented by **active liquidity**, ticks, and positions.
 
-::: warning
-Use ```history -c``` to clear your command history.
-:::
-
-</details>
-
-1. Execute scripts:
+### Quick checks with `cast`
 
 ```bash
-forge script script/00_DeployHook.s.sol \
-    --rpc-url <YOUR_RPC_URL> \
-    --account <YOUR_WALLET_PRIVATE_KEY_NAME> \
-    --sender <YOUR_WALLET_ADDRESS> \
-    --broadcast
+# slot0: sqrtPriceX96, tick, protocolFee, lpFee
+cast call $STATE_VIEW   "getSlot0((address,address,uint24,int24,address))((uint160,int24,uint24,uint24))"   "($USDC,$yBTC,0x800000,60,$HOOK_ADDR)"   --rpc-url $ARBITRUM_SEPOLIA_RPC
+
+# total active liquidity at current tick
+cast call $STATE_VIEW   "getLiquidity((address,address,uint24,int24,address))(uint128)"   "($USDC,$yBTC,0x800000,60,$HOOK_ADDR)"   --rpc-url $ARBITRUM_SEPOLIA_RPC
 ```
 
-You will prompted to enter your wallet password, fill and press enter:
+> Expect `lpFee=0` until a swap occurs — the dynamic fee is applied on-the-fly at swap time by your hook.
+
+### Reading your position’s token amounts
+
+For one range \[tickLower, tickUpper] with current price inside the range:
+
+- `amount0 = (L * (sqrtUpper - sqrtP) * Q96) / (sqrtUpper * sqrtP)`
+- `amount1 = (L * (sqrtP - sqrtLower)) / Q96`  
+  where `Q96 = 2^96` and all sqrt prices are Q64.96.
+
+Use your **position’s liquidity** `L` (from your mint), *not* the pool aggregate, if you want *your* amounts.
+
+---
+
+## 🧠 Dynamic Fee Notes
+
+- **PoolKey.fee** must be `0x800000` (**only** the dynamic flag).  
+  Adding a base pips (e.g., `| 3000`) can cause `LPFeeTooLarge`.
+- Your hook must revert on static-fee pools (e.g., `MustUseDynamicFee()`), and override the fee on swap (`fee | OVERRIDE_FEE_FLAG`).
+
+---
+
+## 🧪 Common gotchas & fixes
+
+- **`MustUseDynamicFee()` on initialize** – you used `fee=3000`. Set `fee=0x800000`.
+- **`LPFeeTooLarge`** – you used `0x800000 | 3000`. Use **only** `0x800000`.
+- **“No wallets found” (Foundry)** – pass `--private-key 0x...`, or ensure the script loads your key correctly.
+- **`execution reverted` on `modifyLiquidities`** – check approvals, `amountMax`, tick bounds snapped to `tickSpacing`, and that the **PoolKey** (fee/spacing/hooks/token order) matches the initialized pool.
+- **Address checksum errors (viem)** – normalize with `getAddress()` and ensure no hidden characters.
+
+---
+
+## 🗺️ Addresses (Arbitrum Sepolia)
+
+- **PoolManager**: `0xFB3e0C6F74eB1a21CC1Da29aeC80D2Dfe6C9a317`  
+- **PositionManager**: `0xAc631556d3d4019C95769033B5E719dD77124BAc`  
+- **StateView**: `0x9D467FA9062b6e9B1a46E26007aD82db116c67cB`  
+- **Permit2**: `0x000000000022D473030F116dDEE9F6B43aC78BA3`
+
+(If these change, update your `.env`.)
+
+---
+
+## 📂 Project layout
 
 ```
-Enter keystore password: <YOUR_PASSWORD>
+src/
+  PegHook.sol           # your dynamic-fee hook
+  ...
+script/
+  00_DeployHook.s.sol
+  01_CreatePoolAndAddLiquidityPegHook.s.sol
+  02_AddLiquidity.s.sol
+  03_Swap.s.sol
 ```
 
-### Key Modifications to note:
+---
 
-1. Update the `token0` and `token1` addresses in the `BaseScript.sol` file to match the tokens you want to use in the network of your choice for sepolia and mainnet deployments.
-2. Update the `token0Amount` and `token1Amount` in the `CreatePoolAndAddLiquidity.s.sol` file to match the amount of tokens you want to provide liquidity with.
-3. Update the `token0Amount` and `token1Amount` in the `AddLiquidity.s.sol` file to match the amount of tokens you want to provide liquidity with.
-4. Update the `amountIn` and `amountOutMin` in the `Swap.s.sol` file to match the amount of tokens you want to swap.
+## ✅ Checklist
 
+- [ ] Set RPC + keys in `.env`
+- [ ] `forge build`
+- [ ] Run `00_DeployHook.s.sol` → copy `HOOK_ADDR` to `.env`
+- [ ] Run `01_CreatePoolAndAddLiquidityPegHook.s.sol`
+- [ ] Verify pool state via `cast` calls
+- [ ] Run `02_AddLiquidity.s.sol` / `03_Swap.s.sol` as needed
 
-### Troubleshooting
+---
 
-<details>
+## License
 
-#### Permission Denied
-
-When installing dependencies with `forge install`, Github may throw a `Permission Denied` error
-
-Typically caused by missing Github SSH keys, and can be resolved by following the steps [here](https://docs.github.com/en/github/authenticating-to-github/connecting-to-github-with-ssh)
-
-Or [adding the keys to your ssh-agent](https://docs.github.com/en/authentication/connecting-to-github-with-ssh/generating-a-new-ssh-key-and-adding-it-to-the-ssh-agent#adding-your-ssh-key-to-the-ssh-agent), if you have already uploaded SSH keys
-
-#### Anvil fork test failures
-
-Some versions of Foundry may limit contract code size to ~25kb, which could prevent local tests to fail. You can resolve this by setting the `code-size-limit` flag
-
-```
-anvil --code-size-limit 40000
-```
-
-#### Hook deployment failures
-
-Hook deployment failures are caused by incorrect flags or incorrect salt mining
-
-1. Verify the flags are in agreement:
-   - `getHookCalls()` returns the correct flags
-   - `flags` provided to `HookMiner.find(...)`
-2. Verify salt mining is correct:
-   - In **forge test**: the _deployer_ for: `new Hook{salt: salt}(...)` and `HookMiner.find(deployer, ...)` are the same. This will be `address(this)`. If using `vm.prank`, the deployer will be the pranking address
-   - In **forge script**: the deployer must be the CREATE2 Proxy: `0x4e59b44847b379578588920cA78FbF26c0B4956C`
-     - If anvil does not have the CREATE2 deployer, your foundry may be out of date. You can update it with `foundryup`
-
-</details>
-
-### Additional Resources
-
-- [Uniswap v4 docs](https://docs.uniswap.org/contracts/v4/overview)
-- [v4-periphery](https://github.com/uniswap/v4-periphery)
-- [v4-core](https://github.com/uniswap/v4-core)
-- [v4-by-example](https://v4-by-example.org)
+MIT

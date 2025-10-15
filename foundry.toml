@@ -7,6 +7,10 @@ out = "out"
 solc_version = "0.8.30"
 src = "src"
 via_ir = false
+env = ".env"      
+[rpc_endpoints]
+arbitrum = "https://arb-mainnet.g.alchemy.com/v2/eoDKFwWxqATc20dM_7bj2ZOuUD8bsHtk"
+arbitrum_sepolia = "https://arb-sepolia.g.alchemy.com/v2/eoDKFwWxqATc20dM_7bj2ZOuUD8bsHtk"
 
 [lint]
 exclude_lints = ["screaming-snake-case-immutable", "screaming-snake-case-const"]

@@ -1,16 +1,21 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.26;
 
+// forge script script/03_Swap.s.sol --rpc-url arbitrum_sepolia --private-key 0xYOUR_PRIVATE_KEY --broadcast
+
 import {PoolKey} from "@uniswap/v4-core/src/types/PoolKey.sol";
+import {LPFeeLibrary} from "v4-core/src/libraries/LPFeeLibrary.sol";
 
 import {BaseScript} from "./base/BaseScript.sol";
 
 contract SwapScript is BaseScript {
     function run() external {
+
+        uint24 lpFee = LPFeeLibrary.DYNAMIC_FEE_FLAG;
         PoolKey memory poolKey = PoolKey({
             currency0: currency0,
             currency1: currency1,
-            fee: 3000,
+            fee: lpFee,
             tickSpacing: 60,
             hooks: hookContract // This must match the pool
         });
@@ -24,7 +29,7 @@ contract SwapScript is BaseScript {
 
         // Execute swap
         swapRouter.swapExactTokensForTokens({
-            amountIn: 1e18,
+            amountIn: 1e5,
             amountOutMin: 0, // Very bad, but we want to allow for unlimited price impact
             zeroForOne: true,
             poolKey: poolKey,

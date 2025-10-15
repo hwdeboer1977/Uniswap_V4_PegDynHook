@@ -5,7 +5,7 @@ import {PoolKey} from "@uniswap/v4-core/src/types/PoolKey.sol";
 import {CurrencyLibrary, Currency} from "@uniswap/v4-core/src/types/Currency.sol";
 import {LiquidityAmounts} from "@uniswap/v4-core/test/utils/LiquidityAmounts.sol";
 import {TickMath} from "@uniswap/v4-core/src/libraries/TickMath.sol";
-
+import {LPFeeLibrary} from "v4-core/src/libraries/LPFeeLibrary.sol";
 import {BaseScript} from "./base/BaseScript.sol";
 import {LiquidityHelpers} from "./base/LiquidityHelpers.sol";
 
@@ -16,13 +16,15 @@ contract CreatePoolAndAddLiquidityScript is BaseScript, LiquidityHelpers {
     // --- Configure These ---
     /////////////////////////////////////
 
-    uint24 lpFee = 3000; // 0.30%
+    //uint24 lpFee = 3000; // 0.30%
+    // Dynamic-fee pool: use ONLY the flag in PoolKey.fee
+    uint24 lpFee = LPFeeLibrary.DYNAMIC_FEE_FLAG; // 0x800000
     int24 tickSpacing = 60;
     uint160 startingPrice = 2 ** 96; // Starting price, sqrtPriceX96; floor(sqrt(1) * 2^96)
 
     // --- liquidity position configuration --- //
-    uint256 public token0Amount = 100e18;
-    uint256 public token1Amount = 100e18;
+    uint256 public token0Amount = 1e6;
+    uint256 public token1Amount = 1e18;
 
     // range of the position, must be a multiple of tickSpacing
     int24 tickLower;
