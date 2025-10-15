@@ -10,20 +10,18 @@ import {PegHook} from "../src/PegHook.sol";
 
 import "forge-std/Script.sol";
 
-// forge script script/00_DeployHookSepolia.s.sol \
-//   --rpc-url arbitrum_sepolia \
-//   --private-key 0xYOUR_PRIVATE_KEY \
-//   --broadcast
+// forge script script/00_DeployHook.s.sol  --rpc-url arbitrum_sepolia --private-key 0xYOUR_PRIVATE_KEY --broadcast
 
 // This code follows https://github.com/uniswapfoundation/v4-template
 
 /// @notice Mines the address and deploys the Peghook.sol Hook contract
 contract DeployHookScript is BaseScript {
     function run() public {
+
         // hook contracts must have specific flags encoded in the address
         uint160 flags = uint160(
-            Hooks.BEFORE_SWAP_FLAG | Hooks.AFTER_SWAP_FLAG | Hooks.BEFORE_ADD_LIQUIDITY_FLAG
-                | Hooks.BEFORE_REMOVE_LIQUIDITY_FLAG
+            Hooks.BEFORE_INITIALIZE_FLAG |
+            Hooks.BEFORE_SWAP_FLAG
         );
 
         // Mine a salt that will produce a hook address with the correct flags
@@ -36,6 +34,7 @@ contract DeployHookScript is BaseScript {
         PegHook peghook = new PegHook{salt: salt}(poolManager);
         vm.stopBroadcast();
 
+        console.log("Hook address: ", hookAddress);
         require(address(peghook) == hookAddress, "DeployHookScript: Hook Address Mismatch");
     }
 }

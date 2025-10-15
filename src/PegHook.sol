@@ -12,6 +12,7 @@ import {SwapParams} from "v4-core/src/types/PoolOperation.sol";
 import {StateLibrary} from "v4-core/src//libraries/StateLibrary.sol";
 import {PoolId, PoolIdLibrary} from "v4-core/src/types/PoolId.sol";
 import {console} from "forge-std/console.sol";
+import {FullMath} from "v4-core/src/libraries/FullMath.sol";
 
 // Uniswap V4 hook with dynamic asymmetric fees per swap.
 // In _beforeSwap we call _computePegFee(key, params.zeroForOne), and inside _computePegFee we compute:
@@ -102,71 +103,50 @@ contract PegHook is BaseHook {
         view
         returns (uint24 fee, PegDebug memory dbg)
     {
-        // Read pool price
-        (uint160 sqrtP, , , ) = StateLibrary.getSlot0(poolManager, key.toId());
-        console.log("sqrt price: ", sqrtP);
+        (uint160 sqrtP,,,) = StateLibrary.getSlot0(poolManager, key.toId());
+
         uint256 price1e18 = _price1e18(sqrtP);
-        console.log("price1e18: ", price1e18);
+        uint256 peg1e18 = 2e18; // TODO: real oracle
 
-        // TODO: replace with real oracle price on 1e18 scale
-        uint256 peg1e18 = 1e18*2;
-        console.log("Oracle price: ", peg1e18);
-
-        // deviation in bps on price space
+        // deviation in bps (safe, 256-bit)
         uint256 devBps = price1e18 > peg1e18
-            ? ((price1e18 - peg1e18) * 10_000) / peg1e18
-            : ((peg1e18 - price1e18) * 10_000) / peg1e18;
-        console.log("Deviation in bps: ", devBps);
+            ? ( (price1e18 - peg1e18) * 10_000 ) / peg1e18
+            : ( (peg1e18 - price1e18) * 10_000 ) / peg1e18;
 
+        uint256 unclamped256;
         uint24 base = BASE_FEE;
-        uint24 unclamped = base;
-        uint256 pctUnits = 0;
+        bool toward = _isTowardPeg(zeroForOne, sqrtP, _sqrtFromPrice1e18(peg1e18));
 
         if (devBps > DEADZONE_BPS) {
-            pctUnits = (devBps - DEADZONE_BPS) / 100; // 100 bps = 1%
-            uint24 magnitude = uint24(pctUnits * SLOPE_PER_1PCT);
-
-            bool toward = _isTowardPeg(zeroForOne, sqrtP, _sqrtFromPrice1e18(peg1e18));
+            
+            uint256 pctUnits = (devBps - DEADZONE_BPS) / 100;
+            if (pctUnits > 1_000) pctUnits = 1_000; // cap at 1000% deviation, example
+            uint256 magnitude256 = pctUnits * SLOPE_PER_1PCT; // keep in 256 bits
 
             if (toward) {
-                // cheaper to restore the peg
-                unchecked {
-                    // protect underflow
-                    unclamped = magnitude >= base ? MIN_FEE : base - magnitude;
-                }
-                fee = unclamped < MIN_FEE ? MIN_FEE : unclamped;
+                // cheaper toward peg; guard underflow by widening first
+                unclamped256 = base > magnitude256 ? uint256(base) - magnitude256 : 0;
+                if (unclamped256 < MIN_FEE) unclamped256 = MIN_FEE;
             } else {
-                // more expensive to move away
-                unchecked { unclamped = base + magnitude; }
-                fee = unclamped > MAX_FEE ? MAX_FEE : unclamped;
+                // more expensive away from peg; guard overflow before cast
+                unclamped256 = uint256(base) + magnitude256;
+                if (unclamped256 > MAX_FEE) unclamped256 = MAX_FEE;
             }
-
-            console.log("Current fee: ", fee);
-
-            dbg = PegDebug({
-                baseFee: base,
-                unclampedFee: unclamped,
-                clampedFee: fee,
-                price1e18: price1e18,
-                peg1e18: peg1e18,
-                devBps: devBps,
-                pctUnits: pctUnits,
-                toward: toward
-            });
-            return (fee, dbg);
+        } else {
+            unclamped256 = base;
         }
 
-        // within deadzone: fee = base
-        fee = base;
+        fee = uint24(unclamped256); // cast only after clamping to [MIN, MAX]
+
         dbg = PegDebug({
             baseFee: base,
-            unclampedFee: base,
-            clampedFee: base,
+            unclampedFee: uint24(unclamped256 > type(uint24).max ? type(uint24).max : unclamped256),
+            clampedFee: fee,
             price1e18: price1e18,
             peg1e18: peg1e18,
             devBps: devBps,
-            pctUnits: 0,
-            toward: true
+            pctUnits: (devBps > DEADZONE_BPS) ? (devBps - DEADZONE_BPS) / 100 : 0,
+            toward: toward
         });
     }
 
@@ -179,7 +159,9 @@ contract PegHook is BaseHook {
 
     // sqrtPriceX96 → price (1e18)
     function _price1e18(uint160 s) internal pure returns (uint256) {
-        return (uint256(s) * uint256(s) * 1e18) >> 192;
+        uint256 s256 = uint256(s);
+        uint256 priceQ0 = FullMath.mulDiv(s256, s256, 1 << 192); // s^2 / Q192
+        return priceQ0 * 1e18; // scale (checked by 0.8)
     }
 
     // approx inverse: 1e18 price → sqrtPriceX96
