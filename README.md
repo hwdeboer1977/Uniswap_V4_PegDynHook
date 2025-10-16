@@ -1,7 +1,5 @@
 # 🪙 PegHook — Dynamic Asymmetric Fee Hook for Uniswap V4
 
-# 🪙 PegHook — Dynamic Asymmetric Fee Hook for Uniswap V4
-
 ### Overview
 
 **PegHook** is a Uniswap v4 **dynamic fee hook** that stabilizes the price of a pegged asset (e.g., `yBTC`) around its target oracle price by adjusting swap fees **asymmetrically** based on deviation from the peg.
@@ -47,18 +45,6 @@ Fees are recomputed dynamically in every `beforeSwap` call.
 
 ---
 
-### 🧩 Key Functions
-
-| Function                                | Description                                                     |
-| --------------------------------------- | --------------------------------------------------------------- |
-| `_beforeSwap()`                         | Core Uniswap v4 hook: computes dynamic fee before every swap    |
-| `_computePegFee()`                      | Calculates current deviation, direction, and fee                |
-| `_isTowardPeg()`                        | Determines whether a swap direction restores or worsens the peg |
-| `_price1e18()` / `_sqrtFromPrice1e18()` | Helpers to convert between sqrtPriceX96 and linear price space  |
-| `previewFee()`                          | External view helper to test fee outcomes off-chain             |
-| `_beforeInitialize()`                   | Ensures pool uses `DynamicFee` flag                             |
-
----
 
 ### 🧠 Behavior Summary
 
@@ -71,41 +57,6 @@ Fees are recomputed dynamically in every `beforeSwap` call.
 
 ---
 
-### 🧪 Testing
-
-Use Foundry or Hardhat to preview computed fees:
-
-```solidity
-(uint24 fee, PegDebug memory dbg) = peghook.previewFee(poolKey, zeroForOne);
-console.log("Fee (pips):", fee);
-console.log("Deviation:", dbg.devBps, "bps");
-console.log("Toward peg:", dbg.toward);
-```
-
-You can also run real swaps on a local v4 test environment using the `Deployers` utilities from `v4-core`.
-
----
-
-### 🏗️ Integration Steps
-
-1. Deploy your oracle contract implementing:
-   ```solidity
-   function getSqrtPriceX96(address token0, address token1)
-       external
-       view
-       returns (uint160);
-   ```
-2. Deploy the hook:
-   ```solidity
-   PegHook hook = new PegHook(poolManager, oracle);
-   ```
-3. Create a pool with **dynamic fee flag**:
-   ```solidity
-   key.fee = LPFeeLibrary.DYNAMIC_FEE_FLAG;
-   ```
-4. Register the hook when initializing the pool.
-
----
 
 ### 📊 Diagrams
 
@@ -166,16 +117,6 @@ flowchart TD
 
 ---
 
-### 📜 License
-
-MIT License © 2025  
-Developed for research and experimentation on Uniswap v4 Hooks.
-
-# PegHook Foundry Template
-
-Deploy a Uniswap v4 **dynamic-fee hook** (“PegHook”), create a pool, add liquidity, and swap on **Arbitrum Sepolia** — all with Foundry scripts.
-
----
 
 ## ✨ What’s inside
 
@@ -294,41 +235,6 @@ Your hook will set the **dynamic LP fee** in `beforeSwap` (it must return `fee |
 
 ---
 
-## 🔎 Inspecting Pool State
-
-There are no “reserves” per-pool in v4; assets live in a shared **PoolManager vault**. Pool “size” is represented by **active liquidity**, ticks, and positions.
-
-### Quick checks with `cast`
-
-```bash
-# slot0: sqrtPriceX96, tick, protocolFee, lpFee
-cast call $STATE_VIEW   "getSlot0((address,address,uint24,int24,address))((uint160,int24,uint24,uint24))"   "($USDC,$yBTC,0x800000,60,$HOOK_ADDR)"   --rpc-url $ARBITRUM_SEPOLIA_RPC
-
-# total active liquidity at current tick
-cast call $STATE_VIEW   "getLiquidity((address,address,uint24,int24,address))(uint128)"   "($USDC,$yBTC,0x800000,60,$HOOK_ADDR)"   --rpc-url $ARBITRUM_SEPOLIA_RPC
-```
-
-> Expect `lpFee=0` until a swap occurs — the dynamic fee is applied on-the-fly at swap time by your hook.
-
-### Reading your position’s token amounts
-
-For one range \[tickLower, tickUpper] with current price inside the range:
-
-- `amount0 = (L * (sqrtUpper - sqrtP) * Q96) / (sqrtUpper * sqrtP)`
-- `amount1 = (L * (sqrtP - sqrtLower)) / Q96`  
-  where `Q96 = 2^96` and all sqrt prices are Q64.96.
-
-Use your **position’s liquidity** `L` (from your mint), _not_ the pool aggregate, if you want _your_ amounts.
-
----
-
-## 🧠 Dynamic Fee Notes
-
-- **PoolKey.fee** must be `0x800000` (**only** the dynamic flag).  
-  Adding a base pips (e.g., `| 3000`) can cause `LPFeeTooLarge`.
-- Your hook must revert on static-fee pools (e.g., `MustUseDynamicFee()`), and override the fee on swap (`fee | OVERRIDE_FEE_FLAG`).
-
----
 
 ## 🧪 Common gotchas & fixes
 
@@ -366,20 +272,10 @@ script/
 
 ---
 
-## ✅ Checklist
+### 📜 License
 
-- [ ] Set RPC + keys in `.env`
-- [ ] `forge build`
-- [ ] Run `00_DeployHook.s.sol` → copy `HOOK_ADDR` to `.env`
-- [ ] Run `01_CreatePoolAndAddLiquidityPegHook.s.sol`
-- [ ] Verify pool state via `cast` calls
-- [ ] Run `02_AddLiquidity.s.sol` / `03_Swap.s.sol` as needed
-
----
-
-## License
-
-MIT
+MIT License © 2025  
+Developed for research and experimentation on Uniswap v4 Hooks.
 
 ---
 
