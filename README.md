@@ -1,3 +1,176 @@
+# 🪙 PegHook — Dynamic Asymmetric Fee Hook for Uniswap V4
+
+# 🪙 PegHook — Dynamic Asymmetric Fee Hook for Uniswap V4
+
+### Overview
+
+**PegHook** is a Uniswap v4 **dynamic fee hook** that stabilizes the price of a pegged asset (e.g., `yBTC`) around its target oracle price by adjusting swap fees **asymmetrically** based on deviation from the peg.
+
+- When the pool price **deviates above** the peg (asset overpriced), fees **increase** for swaps that push price **further away** and **decrease** for swaps that bring it **back toward** the peg.
+- When the pool price **deviates below** the peg (asset underpriced), the logic flips symmetrically.
+
+This mechanism discourages trades that destabilize the peg and rewards trades that restore equilibrium — creating a **soft-peg stabilizer** driven purely by on-chain incentives.
+
+---
+
+### 🔧 Core Idea
+
+| Situation      | Desired trader behavior    | Fee adjustment                                                                              |
+| -------------- | -------------------------- | ------------------------------------------------------------------------------------------- |
+| **yBTC > peg** | Encourage **selling yBTC** | Lower fees for `yBTC → USDC` swaps (toward peg), higher fees for `USDC → yBTC` swaps (away) |
+| **yBTC < peg** | Encourage **buying yBTC**  | Lower fees for `USDC → yBTC` swaps (toward peg), higher fees for `yBTC → USDC` swaps (away) |
+
+Fees are recomputed dynamically in every `beforeSwap` call.
+
+---
+
+### 🔁 How It Works
+
+1. **Pool Price** — Read from `StateLibrary.getSlot0()`
+2. **Peg Price** — From on-chain oracle (e.g., Chainlink or vault oracle)
+3. **Deviation** — Calculated as  
+   \[
+   \text{devBps} = \frac{|p*{pool} - p*{peg}|}{p\_{peg}} \times 10{,}000
+   \]
+4. **Direction Detection** — Determine whether the swap moves price _toward_ or _away_ from the peg:
+   ```solidity
+   bool toward = _isTowardPeg(zeroForOne, sqrtP, sqrtPeg);
+   ```
+   - `zeroForOne` → swap lowers price
+   - `!zeroForOne` → swap raises price
+5. **Fee Adjustment**
+   ```solidity
+   if (toward) fee = base - magnitude; // cheaper toward peg
+   else fee = base + magnitude;        // costlier away from peg
+   ```
+   Clamped between `MIN_FEE` and `MAX_FEE`.
+
+---
+
+### 🧩 Key Functions
+
+| Function                                | Description                                                     |
+| --------------------------------------- | --------------------------------------------------------------- |
+| `_beforeSwap()`                         | Core Uniswap v4 hook: computes dynamic fee before every swap    |
+| `_computePegFee()`                      | Calculates current deviation, direction, and fee                |
+| `_isTowardPeg()`                        | Determines whether a swap direction restores or worsens the peg |
+| `_price1e18()` / `_sqrtFromPrice1e18()` | Helpers to convert between sqrtPriceX96 and linear price space  |
+| `previewFee()`                          | External view helper to test fee outcomes off-chain             |
+| `_beforeInitialize()`                   | Ensures pool uses `DynamicFee` flag                             |
+
+---
+
+### 🧠 Behavior Summary
+
+| Condition        | zeroForOne        | Action                  | Fee impact    |
+| ---------------- | ----------------- | ----------------------- | ------------- |
+| yBTC overpriced  | true (yBTC→USDC)  | move down toward peg    | lower fee ✅  |
+| yBTC overpriced  | false (USDC→yBTC) | move up away from peg   | higher fee ❌ |
+| yBTC underpriced | true (yBTC→USDC)  | move down away from peg | higher fee ❌ |
+| yBTC underpriced | false (USDC→yBTC) | move up toward peg      | lower fee ✅  |
+
+---
+
+### 🧪 Testing
+
+Use Foundry or Hardhat to preview computed fees:
+
+```solidity
+(uint24 fee, PegDebug memory dbg) = peghook.previewFee(poolKey, zeroForOne);
+console.log("Fee (pips):", fee);
+console.log("Deviation:", dbg.devBps, "bps");
+console.log("Toward peg:", dbg.toward);
+```
+
+You can also run real swaps on a local v4 test environment using the `Deployers` utilities from `v4-core`.
+
+---
+
+### 🏗️ Integration Steps
+
+1. Deploy your oracle contract implementing:
+   ```solidity
+   function getSqrtPriceX96(address token0, address token1)
+       external
+       view
+       returns (uint160);
+   ```
+2. Deploy the hook:
+   ```solidity
+   PegHook hook = new PegHook(poolManager, oracle);
+   ```
+3. Create a pool with **dynamic fee flag**:
+   ```solidity
+   key.fee = LPFeeLibrary.DYNAMIC_FEE_FLAG;
+   ```
+4. Register the hook when initializing the pool.
+
+---
+
+### 📊 Diagrams
+
+#### 1. Sequence: swap → hook → fee decision → pool
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant T as Trader
+    participant PM as PoolManager (v4)
+    participant H as PegHook (beforeSwap)
+    participant O as Peg Oracle
+    participant LP as LP Positions
+
+    T->>PM: swap(tokenIn → tokenOut, zeroForOne)
+    PM->>H: beforeSwap(key, params)
+    H->>PM: getSlot0(key)
+    PM-->>H: sqrtP (current price)
+
+    H->>O: getSqrtPriceX96(token0, token1)
+    O-->>H: sqrtPeg (peg price)
+
+    H->>H: compute deviation (bps) & toward/away
+    H->>H: derive fee (base ± magnitude, clamp)
+
+    H-->>PM: return overrideFee | OVERRIDE_FEE_FLAG
+    PM->>LP: execute swap at computed fee
+    PM-->>T: swap result (amounts, price impact)
+```
+
+#### 2. Flow: asymmetric fee logic
+
+```mermaid
+flowchart TD
+    A["Start beforeSwap"] --> B["sqrtP <- pool price"]
+    B --> C["sqrtPeg <- oracle peg"]
+    C --> D["devBps = abs(P - Peg) / Peg * 10000"]
+    D --> E{"devBps <= DEADZONE"}
+    E -->|Yes| F["fee = BASE_FEE"]
+    E -->|No| G["pctUnits = (devBps - DEADZONE) / 100"]
+    G --> H["magnitude = pctUnits * SLOPE_PER_1PCT"]
+    H --> I{"toward = isTowardPeg(zeroForOne, sqrtP, sqrtPeg)"}
+    I --> J["Toward: fee = max(MIN_FEE, BASE_FEE - magnitude)"]
+    I --> K["Away:   fee = min(MAX_FEE, BASE_FEE + magnitude)"]
+    J --> L["return fee + OVERRIDE_FEE_FLAG"]
+    K --> L["return fee + OVERRIDE_FEE_FLAG"]
+    F --> L
+```
+
+---
+
+### 🧭 Future Extensions
+
+- Integrate Chainlink or Uniswap v3 TWAP oracle feed.
+- Add configurable slope and deadzone via governance.
+- Replace linear fee slope with a **sigmoid** or **logarithmic** curve for smoother response.
+- Optionally route part of excess fees to a **treasury** or **rebate pool** for LPs.
+
+---
+
+### 📜 License
+
+MIT License © 2025  
+Developed for research and experimentation on Uniswap v4 Hooks.
+
 # PegHook Foundry Template
 
 Deploy a Uniswap v4 **dynamic-fee hook** (“PegHook”), create a pool, add liquidity, and swap on **Arbitrum Sepolia** — all with Foundry scripts.
@@ -94,6 +267,7 @@ forge script script/01_CreatePoolAndAddLiquidityPegHook.s.sol   --rpc-url $ARBIT
 ```
 
 This script:
+
 - Sorts tokens into `currency0/currency1`
 - Computes `sqrtPriceX96` for your desired start price
 - Calls `PositionManager.initializePool` and `modifyLiquidities` to mint your first position
@@ -144,7 +318,7 @@ For one range \[tickLower, tickUpper] with current price inside the range:
 - `amount1 = (L * (sqrtP - sqrtLower)) / Q96`  
   where `Q96 = 2^96` and all sqrt prices are Q64.96.
 
-Use your **position’s liquidity** `L` (from your mint), *not* the pool aggregate, if you want *your* amounts.
+Use your **position’s liquidity** `L` (from your mint), _not_ the pool aggregate, if you want _your_ amounts.
 
 ---
 
@@ -168,9 +342,9 @@ Use your **position’s liquidity** `L` (from your mint), *not* the pool aggrega
 
 ## 🗺️ Addresses (Arbitrum Sepolia)
 
-- **PoolManager**: `0xFB3e0C6F74eB1a21CC1Da29aeC80D2Dfe6C9a317`  
-- **PositionManager**: `0xAc631556d3d4019C95769033B5E719dD77124BAc`  
-- **StateView**: `0x9D467FA9062b6e9B1a46E26007aD82db116c67cB`  
+- **PoolManager**: `0xFB3e0C6F74eB1a21CC1Da29aeC80D2Dfe6C9a317`
+- **PositionManager**: `0xAc631556d3d4019C95769033B5E719dD77124BAc`
+- **StateView**: `0x9D467FA9062b6e9B1a46E26007aD82db116c67cB`
 - **Permit2**: `0x000000000022D473030F116dDEE9F6B43aC78BA3`
 
 (If these change, update your `.env`.)
@@ -206,3 +380,49 @@ script/
 ## License
 
 MIT
+
+---
+
+## 📈 Appendix — Soft‑Peg Scenarios
+
+Below are concrete examples showing how asymmetric dynamic fees behave with your chosen parameters:
+
+| Parameter           | Value                              |
+| ------------------- | ---------------------------------- |
+| **MIN_FEE**         | 0.05 % (500 pips)                  |
+| **BASE_FEE**        | 0.30 % (3000 pips)                 |
+| **MAX_FEE**         | 10 % (100 000 pips)                |
+| **DEADZONE_BPS**    | 25 bps (0.25 %)                    |
+| **SLOPE_TOWARD**    | 150  (–0.015 % per +1 % deviation) |
+| **SLOPE_AWAY**      | 1200  (+0.12 % per +1 % deviation) |
+| **ARB_TRIGGER_BPS** | 5 000 bps (50 %)                   |
+
+### LP price below vault (yBTC undervalued)
+
+| Deviation | Toward (buy yBTC, USDC→yBTC) |     Fee | Away (sell yBTC, yBTC→USDC) |    Fee |
+| --------- | ---------------------------- | ------: | --------------------------- | -----: |
+| 0.1 %     | Dead‑zone                    |  0.30 % | Dead‑zone                   | 0.30 % |
+| 1 %       | Dead‑zone                    |  0.30 % | Dead‑zone                   | 0.30 % |
+| 5 %       | Cheaper                      |  0.24 % | Costlier                    | 0.78 % |
+| 10 %      | Cheaper                      | 0.165 % | Costlier                    | 1.38 % |
+| 25 %      | Hits MIN                     |  0.05 % | Higher                      | 3.18 % |
+| 50 %+     | Arb zone → MIN               |  0.05 % | Arb zone → MAX              |   10 % |
+
+### LP price above vault (yBTC overvalued)
+
+| Deviation | Toward (sell yBTC, yBTC→USDC) |     Fee | Away (buy yBTC, USDC→yBTC) |    Fee |
+| --------- | ----------------------------- | ------: | -------------------------- | -----: |
+| 0.1 %     | Dead‑zone                     |  0.30 % | Dead‑zone                  | 0.30 % |
+| 1 %       | Dead‑zone                     |  0.30 % | Dead‑zone                  | 0.30 % |
+| 5 %       | Cheaper                       |  0.24 % | Costlier                   | 0.78 % |
+| 10 %      | Cheaper                       | 0.165 % | Costlier                   | 1.38 % |
+| 25 %      | Hits MIN                      |  0.05 % | Higher                     | 3.18 % |
+| 50 %+     | Arb zone → MIN                |  0.05 % | Arb zone → MAX             |   10 % |
+
+### Interpretation
+
+- Trades that **move toward the peg** are _rewarded_ with cheaper fees.
+- Trades that **move away** from the peg are _penalized_ with steeper fees.
+- The **soft‑peg** handles small to medium deviations continuously, while **arbitrage** enforces the hard peg at large deviations.
+
+---
